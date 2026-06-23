@@ -1,7 +1,7 @@
 name = "IntersecT"
 uuid = "b262a841-46b1-4418-b8a4-94cbac2a4e8a"
 version = "0.1.0"
-authors = ["Sara Nerone <sara.nerone@unito.it> and contributors"]
+authors = ["Sara Nerone <sara.nerone@unito.it>"]
 
 [deps]
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
