@@ -260,9 +260,9 @@ function run_intersect(
     for p in 1:n_phases
         f = length(phase_elem_idx[p])
         if f == 1
-            @warn "Phase $(phase_names[p]) has only 1 element. Chi-squared is unreliable."
+            @warn "Phase $(phase_names[p]) has only 1 element. χ2 is unreliable."
         elseif f == 2
-            @warn "Phase $(phase_names[p]) has only 2 elements. Plain chi-squared (not reduced) will be used."
+            @warn "Phase $(phase_names[p]) has only 2 elements. χ2 (not reduced) will be used."
         end
     end
 
@@ -460,14 +460,14 @@ function generate_log(result::IntersecTResult)::IntersecTLog
         redchi2_phase_min[p] = isempty(finite_vals) ? NaN : minimum(finite_vals)
         f = result.n_elements_per_phase[p]
         if f == 1
-            redchi2_phase_label[p] = "chi2"
+            redchi2_phase_label[p] = "χ2"
             push!(redchi2_warnings,
                 "WARNING: Phase $(result.phase_names[p]) has only 1 element. " *
-                "Chi-squared is unreliable.")
+                "χ2 is unreliable.")
         elseif f == 2
-            redchi2_phase_label[p] = "chi2"
+            redchi2_phase_label[p] = "χ2"
         else
-            redchi2_phase_label[p] = "reduced chi2"
+            redchi2_phase_label[p] = "reduced χ2"
         end
     end
 
@@ -523,7 +523,7 @@ function format_log(log::IntersecTLog, x_label::String, y_label::String)::String
               "$y_label = $(round(log.Qcmp_phase_max_y[p], digits=4))")
     end
 
-    push!(L, "\n--- Minimum chi-squared per phase ---")
+    push!(L, "\n--- Minimum χ2 statistic per phase ---")
     for p in eachindex(log.phase_names)
         push!(L, "  $(log.phase_names[p]) : min $(log.redchi2_phase_label[p]) = " *
               "$(round(log.redchi2_phase_min[p], digits=4))  " *
@@ -531,7 +531,7 @@ function format_log(log::IntersecTLog, x_label::String, y_label::String)::String
     end
     isempty(log.redchi2_warnings) || append!(L, ["", log.redchi2_warnings...])
 
-    push!(L, "\n--- Minimum total reduced chi-squared ---")
+    push!(L, "\n--- Minimum total reduced χ2 ---")
     push!(L, "  $(round(log.redchi2_tot_min, digits=4))  " *
           "at $x_label = $(round(log.redchi2_tot_min_x, digits=2)), " *
           "$y_label = $(round(log.redchi2_tot_min_y, digits=4))")
