@@ -144,10 +144,26 @@ end
     @test phase_ids   == [1, 1, 2]
 end
 
-@testset "parse_measurements auto error" begin
+@testset "parse_measurements NaN uncertainties" begin
     df = DataFrame("Grt_Mg" => [1.2, NaN], "Grt_Ca" => [0.8, NaN])
     _, _, obs_err, _, _ = IntersecT.parse_measurements(df)
     @test isempty(obs_err)
+end
+
+@testset "parse_measurements auto keyword" begin
+    df = DataFrame("Grt_Mg" => ["1.2", "auto"], "Grt_Ca" => ["0.8", missing])
+    _, apfu_obs, obs_err, _, _ = IntersecT.parse_measurements(df)
+    @test apfu_obs ≈ [1.2, 0.8]
+    @test isempty(obs_err)
+
+    df_upper = DataFrame("Grt_Mg" => ["1.2", "AUTO"], "Grt_Ca" => ["0.8", missing])
+    @test isempty(IntersecT.parse_measurements(df_upper)[3])
+
+    df_mixed = DataFrame("Grt_Mg" => ["1.2", "auto"], "Grt_Ca" => ["0.8", "0.04"])
+    @test_throws ErrorException IntersecT.parse_measurements(df_mixed)
+
+    df_partial = DataFrame("Grt_Mg" => [1.2, 0.05], "Grt_Ca" => [0.8, missing])
+    @test_throws ErrorException IntersecT.parse_measurements(df_partial)
 end
 
 # ============================================================

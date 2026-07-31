@@ -136,16 +136,36 @@ end
 # Input parsing
 # ============================================================
 
+_isblank(x) = ismissing(x) || (x isa AbstractString && isempty(strip(x)))
+_isauto(x)  = x isa AbstractString && lowercase(strip(x)) == "auto"
+
+function _tofloat(x, col::AbstractString)
+    ismissing(x) && error("Empty cell in column '$col': expected a number.")
+    x isa AbstractString || return Float64(x)
+    v = tryparse(Float64, strip(x))
+    isnothing(v) && error("Cannot read '$x' as a number in column '$col'.")
+    return v
+end
+
 """parse_measurements(df) -> (element_names, apfu_obs, obs_err, phase_names, phase_ids)"""
 function parse_measurements(df::DataFrame)
     element_names = String.(names(df))
-    apfu_obs      = Float64.(Vector(df[1, :]))
-    err_row       = Vector(df[2, :])
+    row1          = Vector(df[1, :])
+    row2          = Vector(df[2, :])
+    apfu_obs      = [_tofloat(row1[j], element_names[j]) for j in eachindex(row1)]
 
-    obs_err = if all(x -> ismissing(x) || (x isa Number && isnan(Float64(x))), err_row)
+    all_nan = all(x -> ismissing(x) || (x isa Number && isnan(Float64(x))), row2)
+
+    obs_err = if _isauto(row2[1]) || all_nan
+        if _isauto(row2[1]) && !all(_isblank, row2[2:end])
+            error("Row 2: when 'auto' is used, all remaining cells must be empty.")
+        end
         Float64[]
     else
-        Float64.(coalesce.(err_row, NaN))
+        if any(_isblank, row2) || any(_isauto, row2)
+            error("Row 2 must be either fully numeric, or 'auto' in the first cell only.")
+        end
+        [_tofloat(row2[j], element_names[j]) for j in eachindex(row2)]
     end
 
     phase_names = String[]
