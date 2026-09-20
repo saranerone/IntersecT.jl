@@ -134,30 +134,32 @@ end
         "Grt_Ca" => [0.8, 0.04],
         "Bt_Fe"  => [2.1, 0.1],
     )
-    elem_names, apfu_obs, obs_err, phase_names, phase_ids =
+    elem_names, elem_labels, apfu_obs, obs_err, phase_names, phase_bases, phase_ids =
         IntersecT.parse_measurements(df)
 
     @test elem_names  == ["Grt_Mg", "Grt_Ca", "Bt_Fe"]
+    @test elem_labels == ["Grt_Mg", "Grt_Ca", "Bt_Fe"]
     @test apfu_obs    ≈ [1.2, 0.8, 2.1]
     @test obs_err     ≈ [0.05, 0.04, 0.1]
     @test phase_names == ["Grt", "Bt"]
+    @test phase_bases == ["Grt", "Bt"]
     @test phase_ids   == [1, 1, 2]
 end
 
 @testset "parse_measurements NaN uncertainties" begin
     df = DataFrame("Grt_Mg" => [1.2, NaN], "Grt_Ca" => [0.8, NaN])
-    _, _, obs_err, _, _ = IntersecT.parse_measurements(df)
+    _, _, _, obs_err, _, _, _ = IntersecT.parse_measurements(df)
     @test isempty(obs_err)
 end
 
 @testset "parse_measurements auto keyword" begin
     df = DataFrame("Grt_Mg" => ["1.2", "auto"], "Grt_Ca" => ["0.8", missing])
-    _, apfu_obs, obs_err, _, _ = IntersecT.parse_measurements(df)
+    _, _, apfu_obs, obs_err, _, _, _ = IntersecT.parse_measurements(df)
     @test apfu_obs ≈ [1.2, 0.8]
     @test isempty(obs_err)
 
     df_upper = DataFrame("Grt_Mg" => ["1.2", "AUTO"], "Grt_Ca" => ["0.8", missing])
-    @test isempty(IntersecT.parse_measurements(df_upper)[3])
+    @test isempty(IntersecT.parse_measurements(df_upper)[4])
 
     df_mixed = DataFrame("Grt_Mg" => ["1.2", "auto"], "Grt_Ca" => ["0.8", "0.04"])
     @test_throws ErrorException IntersecT.parse_measurements(df_mixed)
@@ -388,5 +390,95 @@ end
     @test r1.Qcmp_unweighted == r2.Qcmp_unweighted
     @test r1.redchi2_tot     == r2.redchi2_tot
 end
+
+# ============================================================
+# Domain row (phase zoning)
+# ============================================================
+
+@testset "domain row - parsing" begin
+    df = DataFrame(
+        "Grt_Mg"   => ["core", "1.2", "0.05"],
+        "Grt_Mg_1" => ["rim",  "0.6", "0.05"],
+        "Bt_Fe"    => [missing, "2.1", "0.10"],
+    )
+    elem_names, elem_labels, apfu_obs, obs_err, phase_names, phase_bases, phase_ids =
+        IntersecT.parse_measurements(df)
+
+    @test elem_names  == ["Grt_Mg", "Grt_Mg", "Bt_Fe"]
+    @test elem_labels == ["Grt core_Mg", "Grt rim_Mg", "Bt_Fe"]
+    @test apfu_obs    ≈ [1.2, 0.6, 2.1]
+    @test obs_err     ≈ [0.05, 0.05, 0.10]
+    @test phase_names == ["Grt core", "Grt rim", "Bt"]
+    @test phase_bases == ["Grt", "Grt", "Bt"]
+    @test phase_ids   == [1, 2, 3]
+end
+
+@testset "domain row - errors" begin
+    df_auto = DataFrame("Grt_Mg" => ["auto", "1.2", "0.05"])
+    @test_throws ErrorException IntersecT.parse_measurements(df_auto)
+
+    df_empty = DataFrame("Grt_Mg" => [missing, "1.2"], "Grt_Ca" => [missing, "0.8"])
+    @test_throws ErrorException IntersecT.parse_measurements(df_empty)
+end
+
+@testset "select_phases" begin
+    df = DataFrame(
+        "Grt_Mg"   => ["core", "1.2", "0.05"],
+        "Grt_Mg_1" => ["rim",  "0.6", "0.05"],
+        "Bt_Fe"    => [missing, "2.1", "0.10"],
+    )
+
+    labels, bases = IntersecT.list_measured_phases(df)
+    @test labels == ["Grt core", "Grt rim", "Bt"]
+    @test bases  == ["Grt", "Grt", "Bt"]
+
+    sub = IntersecT.select_phases(df, ["Grt core", "Bt"])
+    @test ncol(sub) == 2
+    @test IntersecT.parse_measurements(sub)[5] == ["Grt core", "Bt"]
+
+    @test_throws ErrorException IntersecT.select_phases(df, ["Grt core", "Grt rim"])
+    @test_throws ErrorException IntersecT.select_phases(df, ["Grt mantle"])
+end
+
+
+@testset "domain row - end to end" begin
+    model_df = DataFrame(
+        "T(K)"   => [773.0, 873.0, 973.0],
+        "P(bar)" => [10000.0, 10000.0, 10000.0],
+        "Grt_Mg" => [1.2, 0.9, 0.6],
+        "Grt_Fe" => [2.0, 2.3, 2.6],
+        "Grt_Ca" => [0.3, 0.3, 0.3],
+        "Bt_Mg"  => [0.8, 0.8, 0.8],
+        "Bt_Fe"  => [1.0, 1.0, 1.0],
+    )
+
+    meas_df = DataFrame(
+        "Grt_Mg"   => ["core", "1.2", "0.05"],
+        "Grt_Fe"   => ["core", "2.0", "0.05"],
+        "Grt_Ca"   => ["core", "0.3", "0.05"],
+        "Grt_Mg_1" => ["rim",  "0.6", "0.05"],
+        "Grt_Fe_1" => ["rim",  "2.6", "0.05"],
+        "Grt_Ca_1" => ["rim",  "0.3", "0.05"],
+        "Bt_Mg"    => [missing, "0.8", "0.05"],
+        "Bt_Fe"    => [missing, "1.0", "0.05"],
+    )
+
+    res_core = IntersecT.run_intersect(
+        model_df, IntersecT.select_phases(meas_df, ["Grt core", "Bt"]))
+    res_rim = IntersecT.run_intersect(
+        model_df, IntersecT.select_phases(meas_df, ["Grt rim", "Bt"]))
+
+    @test res_core.phase_names == ["Grt core", "Bt"]
+    @test res_core.phase_bases == ["Grt", "Bt"]
+    @test res_rim.phase_names  == ["Grt rim", "Bt"]
+
+    # the core matches the low-T point, the rim the high-T point
+    @test argmax(res_core.Qcmp_weighted) == 1
+    @test argmax(res_rim.Qcmp_weighted)  == 3
+
+    @test res_core.element_names[1] == "Grt core_Mg"
+    @test res_core.analysis_type    == "WDS spot"
+end
+
 
 println("\nAll tests passed.")

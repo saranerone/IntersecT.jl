@@ -2,9 +2,10 @@
 module IntersecT
 
 using DataFrames
+using CSV
 using Statistics
 
-export IntersecTResult, IntersecTLog, run_intersect, generate_log, calc_obs_err, load_model_csv, load_measurements_csv
+export IntersecTResult, IntersecTLog, run_intersect, generate_log, calc_obs_err, load_model_csv, load_measurements_csv, list_measured_phases, select_phases
 
 # ============================================================
 # Constants
@@ -41,6 +42,8 @@ struct IntersecTResult
     Qcmp_weighted         :: Vector{Float64}
     min_redchi2           :: Vector{Float64}   # length n_phases
     n_elements_per_phase  :: Vector{Int}       # length n_phases
+    phase_bases           :: Vector{String}    # phase names without domain label
+    analysis_type         :: String
 end
 
 # ============================================================
@@ -138,6 +141,26 @@ end
 
 _isblank(x) = ismissing(x) || (x isa AbstractString && isempty(strip(x)))
 _isauto(x)  = x isa AbstractString && lowercase(strip(x)) == "auto"
+_isnumeric(x) = !_isblank(x) && !isnothing(tryparse(Float64, strip(string(x))))
+
+# Removes the suffix CSV.jl adds to duplicated column names (Grt_Mg_1 -> Grt_Mg).
+function _strip_dedup(names_raw::Vector{String})
+    out = similar(names_raw)
+    for j in eachindex(names_raw)
+        m = match(r"^(.*_.*)_(\d+)$", names_raw[j])
+        out[j] = isnothing(m) ? names_raw[j] : String(m.captures[1])
+    end
+    return out
+end
+
+# The row below the header is a domain row if it holds at least one label.
+function _has_domain_row(row)
+    all(_isblank, row) &&
+        error("The row below the header is empty. Remove it, or fill in the domain labels.")
+    return any(x -> !_isblank(x) && !_isnumeric(x), row)
+end
+
+_qualify(base::String, domain::String) = isempty(domain) ? base : base * " " * domain
 
 function _tofloat(x, col::AbstractString)
     ismissing(x) && error("Empty cell in column '$col': expected a number.")
@@ -147,42 +170,88 @@ function _tofloat(x, col::AbstractString)
     return v
 end
 
-"""parse_measurements(df) -> (element_names, apfu_obs, obs_err, phase_names, phase_ids)"""
+"""parse_measurements(df) -> (element_names, element_labels, apfu_obs, obs_err,
+                              phase_names, phase_bases, phase_ids)"""
 function parse_measurements(df::DataFrame)
-    element_names = String.(names(df))
+    raw_names     = String.(names(df))
+    element_names = _strip_dedup(raw_names)          # used to query the model
     row1          = Vector(df[1, :])
-    row2          = Vector(df[2, :])
-    apfu_obs      = [_tofloat(row1[j], element_names[j]) for j in eachindex(row1)]
 
-    all_nan = all(x -> ismissing(x) || (x isa Number && isnan(Float64(x))), row2)
+    has_domain = _has_domain_row(row1)
+    nrow(df) < (has_domain ? 3 : 2) &&
+        error("The measurements file has too few rows.")
 
-    obs_err = if _isauto(row2[1]) || all_nan
-        if _isauto(row2[1]) && !all(_isblank, row2[2:end])
-            error("Row 2: when 'auto' is used, all remaining cells must be empty.")
+    if has_domain
+        domains = [_isblank(x) ? "" : String(strip(string(x))) for x in row1]
+        any(d -> lowercase(d) == "auto", domains) &&
+            error("'auto' is not a valid domain label.")
+        row_obs = Vector(df[2, :])
+        row_err = Vector(df[3, :])
+    else
+        domains = fill("", length(element_names))
+        row_obs = row1
+        row_err = Vector(df[2, :])
+    end
+
+    apfu_obs = [_tofloat(row_obs[j], element_names[j]) for j in eachindex(row_obs)]
+
+    all_nan = all(x -> ismissing(x) || (x isa Number && isnan(Float64(x))), row_err)
+
+    obs_err = if _isauto(row_err[1]) || all_nan
+        if _isauto(row_err[1]) && !all(_isblank, row_err[2:end])
+            error("Uncertainty row: when 'auto' is used, all remaining cells must be empty.")
         end
         Float64[]
     else
-        if any(_isblank, row2) || any(_isauto, row2)
-            error("Row 2 must be either fully numeric, or 'auto' in the first cell only.")
+        if any(_isblank, row_err) || any(_isauto, row_err)
+            error("The uncertainty row must be either fully numeric, or 'auto' in the first cell only.")
         end
-        [_tofloat(row2[j], element_names[j]) for j in eachindex(row2)]
+        [_tofloat(row_err[j], element_names[j]) for j in eachindex(row_err)]
     end
 
-    phase_names = String[]
-    phase_ids   = Int[]
-    for name in element_names
-        parts = split(name, "_"; limit=2)
-        phase = length(parts) >= 2 ? String(parts[1]) : name
-        idx   = findfirst(==(phase), phase_names)
+    element_labels = String[]
+    phase_names    = String[]    # qualified, for display
+    phase_bases    = String[]    # base names, for the model
+    phase_ids      = Int[]
+
+    for (j, name) in enumerate(element_names)
+        parts   = split(name, "_"; limit=2)
+        base    = length(parts) >= 2 ? String(parts[1]) : name
+        element = length(parts) >= 2 ? String(parts[2]) : ""
+        key     = _qualify(base, domains[j])
+
+        push!(element_labels, isempty(element) ? key : key * "_" * element)
+
+        idx = findfirst(==(key), phase_names)
         if isnothing(idx)
-            push!(phase_names, phase)
+            push!(phase_names, key)
+            push!(phase_bases, base)
             push!(phase_ids, length(phase_names))
         else
             push!(phase_ids, idx)
         end
     end
 
-    return element_names, apfu_obs, obs_err, phase_names, phase_ids
+    return element_names, element_labels, apfu_obs, obs_err,
+           phase_names, phase_bases, phase_ids
+end
+
+"""list_measured_phases(df) -> (labels, bases)"""
+function list_measured_phases(df::DataFrame)
+    _, _, _, _, phase_names, phase_bases, _ = parse_measurements(df)
+    return phase_names, phase_bases
+end
+
+"""select_phases(df, selected) -> DataFrame"""
+function select_phases(df::DataFrame, selected::Vector{String})
+    _, _, _, _, phase_names, phase_bases, phase_ids = parse_measurements(df)
+    idx_sel = [findfirst(==(s), phase_names) for s in selected]
+    any(isnothing, idx_sel) &&
+        error("Unknown phase selection. Available: " * join(phase_names, ", "))
+    idx_sel = Int.(idx_sel)
+    length(unique(phase_bases[idx_sel])) == length(idx_sel) ||
+        error("Only one domain per phase can be selected in a single run.")
+    return df[:, findall(p -> p in idx_sel, phase_ids)]
 end
 
 """extract_model_data(model_df, element_names, x_col, y_col)"""
@@ -221,8 +290,11 @@ function extract_model_data(
                 v = col_vals[i]
                 model_matrix[i, j] = (ismissing(v) || (v isa Number && isnan(Float64(v)))) ? NaN : Float64(v)
             end
+        else
+            @warn "Column '$elem_name' not found in the model output. " *
+                  "The corresponding map will be empty. The model is queried " *
+                  "with the base phase name, not with the domain label."
         end
-        # column not found -> stays NaN for all points (phase never present)
     end
 
     return x, y, x_label, y_label, model_matrix
@@ -256,7 +328,7 @@ function run_intersect(
 )::IntersecTResult
 
     # --- parse measurements ---
-    element_names, apfu_obs, obs_err, phase_names, phase_ids =
+    element_names, element_labels, apfu_obs, obs_err, phase_names, phase_bases, phase_ids =
         parse_measurements(measurements_df)
 
     n_elements = length(element_names)
@@ -386,7 +458,7 @@ function run_intersect(
         x, y,
         x_label, y_label,
         phase_names,
-        element_names,
+        element_labels,
         Qcmp_elem_mat,
         Qcmp_phase_mat,
         redchi2_phase_mat,
@@ -395,6 +467,8 @@ function run_intersect(
         Qcmp_weighted_vec,
         min_redchi2,
         n_elements_per_phase,
+        phase_bases,
+        analysis_type,
     )
 end
 

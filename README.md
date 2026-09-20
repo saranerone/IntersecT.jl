@@ -1,9 +1,9 @@
 # IntersecT.jl
 
 Julia core for **IntersecT** — Quantitative Isopleth Thermobarometry from Thermodynamic Models.
-Reference: Nerone et al. (2025), doi:[10.1016/j.cageo.2025.105949](https://doi.org/10.1016/j.cageo.2025.105949)
+Reference: Nerone et al. (2025), doi: [10.1016/j.cageo.2025.105949](https://doi.org/10.1016/j.cageo.2025.105949)
 
-Computes quality factors (Qcmp) and reduced chi-squared statistics to assess the agreement between measured and modelled mineral compositions, following the approach of Duesterhoeft & Lanari (2020), doi:[10.1111/jmg.12538](https://doi.org/10.1111/jmg.12538).
+Computes quality factors (Qcmp) and reduced chi-squared statistics to assess the agreement between measured and modelled mineral compositions, following the approach of Duesterhoeft & Lanari (2020), doi: [10.1111/jmg.12538](https://doi.org/10.1111/jmg.12538).
 
 This package implements the computational core only. Visualisation and user interface are handled externally (MAGEMin GUI).
 
@@ -11,11 +11,15 @@ This package implements the computational core only. Visualisation and user inte
 
 ## Installation
 
+Users of the MAGEMin GUI do not need to install this package separately: it is
+installed as a dependency of MAGEMinApp. Install it directly only for standalone
+use.
+
 This package is not yet registered. Install directly from GitHub:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/YOUR-USERNAME/IntersecT.jl")
+Pkg.add(url="https://github.com/saranerone/IntersecT.jl")
 ```
 
 Or clone the repository and activate the local environment:
@@ -35,10 +39,10 @@ using IntersecT
 
 result = IntersecT.run_intersect(
     model_df,       # DataFrame: one row per grid point, columns "Phase_Element" in a.p.f.u.
-    measurements_df;# DataFrame: row 1 = observed values, row 2 = uncertainties or "auto"
+    measurements_df;# DataFrame: observed values, uncertainties or "auto", optional domain row
     x_col = "T(K)", # name of the x-coordinate column in model_df
     y_col = "P(bar)",
-    analysis_type = "WDS map"  # required if row 2 of measurements_df is "auto"
+    analysis_type = "WDS map"  # required if the uncertainty row is "auto"
 )
 ```
 
@@ -55,7 +59,7 @@ Use `NaN` or `missing` where a phase is absent at a grid point.
 
 ### Input format — measurements DataFrame
 
-Column names are `Phase_Element` labels. Row 1 = observed a.p.f.u., row 2 = uncertainties. Write `auto` in the first cell of row 2 (leaving all other cells empty) to trigger automatic uncertainty estimation from `analysis_type`. Row 2 must be either fully numeric or `auto`; mixed values are not accepted.
+Column names are `Phase_Element` labels. Row 1 = observed a.p.f.u., row 2 = uncertainties. Write `auto` in the first cell of the uncertainty row (leaving all other cells empty) to trigger automatic uncertainty estimation from `analysis_type`. The uncertainty row must be either fully numeric or `auto`; mixed values are not accepted.
 
 | Grt_Mg | Grt_Ca | Grt_Fe | Ms_Si | Ms_Al |
 |--------|--------|--------|-------|-------|
@@ -68,6 +72,38 @@ Or, using automatic uncertainty estimation:
 |--------|--------|--------|-------|-------|
 | 1.20   | 0.80   | 0.95   | 3.57  | 1.96  |
 | auto   |        |        |       |       |
+
+### Input format — compositional domains
+
+Compositional domains (e.g. garnet core and rim, biotite syn- or post- main foliation) are declared in an optional row placed directly below the header, above the observed values:
+
+| Grt_Mg | Grt_Ca | Grt_Mg | Grt_Ca | Bt_Mg | Bt_Fe |
+|--------|--------|--------|--------|-------|-------|
+| core   | core   | rim    | rim    |       |       |
+| 1.20   | 0.80   | 0.60   | 0.95   | 1.10  | 1.40  |
+| 0.05   | 0.04   | 0.05   | 0.04   | 0.05  | 0.05  |
+
+Domain labels are free text. Empty cells mean that the column carries no domain. The row is detected automatically: a first row that is fully numeric is read as the observed values, and existing files without domains are therefore unaffected. `auto` is not accepted as a domain label.
+
+Domains are kept separate at every stage of the calculation. A phase with a domain is displayed with its qualified name (`Grt core`), while the model is always queried with the base name (`Grt`). Duplicated column names are expected in files with domains, and the suffix added by CSV.jl (`Grt_Mg_1`) is removed internally.
+
+Two domains of the same phase cannot enter the same run: domains grown at different conditions do not constitute an equilibrium assemblage, which is what the quality factor assumes. Each domain is instead evaluated in a separate run.
+
+```julia
+labels, bases = IntersecT.list_measured_phases(measurements_df)
+# labels = ["Grt core", "Grt rim", "Bt"]
+# bases  = ["Grt", "Grt", "Bt"]
+
+core_df = IntersecT.select_phases(measurements_df, ["Grt core", "Bt"])
+rim_df  = IntersecT.select_phases(measurements_df, ["Grt rim", "Bt"])
+
+res_core = IntersecT.run_intersect(model_df, core_df)
+res_rim  = IntersecT.run_intersect(model_df, rim_df)
+```
+
+`list_measured_phases` returns the qualified names, to be displayed in the interface, and the base names, to be intersected with the stable phases of the diagram. `select_phases` extracts the columns of the selected phases and throws an error if two domains of the same phase are selected together.
+
+Absolute Q*cmp values are not comparable between runs that include different phases or different elements, because the weights are normalised within each run. Comparable is the position of the maximum, not its value.
 
 ### Output
 
@@ -86,11 +122,15 @@ Or, using automatic uncertainty estimation:
 | `Qcmp_unweighted` | `Vector{Float64}` | Unweighted total Qcmp `(n_points,)` |
 | `Qcmp_weighted` | `Vector{Float64}` | Weighted total Qcmp `(n_points,)` |
 | `min_redchi2` | `Vector{Float64}` | Minimum reduced χ² per phase, used for weighting `(n_phases,)` |
+| `n_elements_per_phase` | `Vector{Int}` | Number of measured elements per phase `(n_phases,)` |
+| `phase_bases` | `Vector{String}` | Phase names without domain label `(n_phases,)` |
+| `analysis_type` | `String` | Analysis type used for the run |
 
 ### NaN policy
 
 - `Qcmp_phase[i, p]` and `redchi2_phase[i, p]` are `NaN` only where phase `p` is absent at point `i`. Other phases at the same point are computed normally.
 - `Qcmp_weighted[i]`, `Qcmp_unweighted[i]`, and `redchi2_tot[i]` are `NaN` where **any** phase is absent. These outputs are only defined within the full assemblage stability field.
+- A measured column with no matching column in the model output produces a warning and an empty map.
 
 ---
 
